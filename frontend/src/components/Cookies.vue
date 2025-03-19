@@ -156,7 +156,8 @@ export default {
     },
     formatDate(dateString) {
       if (!dateString) return '';
-      const date = new Date(dateString);
+      const date = new Date(parseInt(dateString));
+      if (isNaN(date.getTime())) return dateString;
       return date.toLocaleString('de-DE', {
         year: 'numeric',
         month: '2-digit',
