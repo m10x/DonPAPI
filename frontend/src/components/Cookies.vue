@@ -240,8 +240,11 @@ export default {
 
 <style lang="scss">
 .text_column {
-  min-width:10rem;
-  max-width:10rem;
+  min-width: 10rem;
+  max-width: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .expired {
@@ -255,6 +258,9 @@ tr {
 
 td {
   cursor: pointer; 
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .buttons {
@@ -277,5 +283,15 @@ td {
   max-width: 20rem;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.table {
+  width: 100% !important;
+  table-layout: fixed;
+}
+
+.tableFixHead {
+  overflow-y: auto;
+  max-height: 70vh;
 }
 </style>
