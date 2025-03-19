@@ -179,7 +179,13 @@ export default {
       var secretsToExport = [];
       for (var i=0; i<secretsCheckboxes.length; i++) {
         if (secretsCheckboxes[i].checked) {
-          secretsToExport.push(this.secrets[i]);
+          const secret = {...this.secrets[i]};
+          Object.keys(secret).forEach(key => {
+            if (secret[key] !== null && secret[key] !== undefined) {
+              secret[key] = String(secret[key]);
+            }
+          });
+          secretsToExport.push(secret);
         }
       }
       const dataToExport = arrayToCsv(secretsToExport)

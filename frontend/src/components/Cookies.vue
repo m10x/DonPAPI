@@ -186,7 +186,13 @@ export default {
       var cookiesToExport = [];
       for (var i=0; i<cookiesCheckboxes.length; i++) {
         if (cookiesCheckboxes[i].checked) {
-          cookiesToExport.push(this.cookies[i]);
+          const cookie = {...this.cookies[i]};
+          Object.keys(cookie).forEach(key => {
+            if (cookie[key] !== null && cookie[key] !== undefined) {
+              cookie[key] = String(cookie[key]);
+            }
+          });
+          cookiesToExport.push(cookie);
         }
       }
       const dataToExport = arrayToCsv(cookiesToExport);

@@ -118,7 +118,13 @@ export default {
       var certificatesToExport = [];
       for (var i=0; i<certificatesCheckboxes.length; i++) {
         if (certificatesCheckboxes[i].checked) {
-          certificatesToExport.push(this.certificates[i]);
+          const certificate = {...this.certificates[i]};
+          Object.keys(certificate).forEach(key => {
+            if (certificate[key] !== null && certificate[key] !== undefined) {
+              certificate[key] = String(certificate[key]);
+            }
+          });
+          certificatesToExport.push(certificate);
         }
       }
       const dataToExport = arrayToCsv(certificatesToExport)
