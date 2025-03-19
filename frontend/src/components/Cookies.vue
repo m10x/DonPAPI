@@ -67,6 +67,19 @@
                 </div>
               </span>
             </th>
+            <th class="text_column" scope="col">
+              <span>
+                Creation date
+                <div>
+                  <input type="text" placeholder="Search text" v-model="creation_date_search_value" @input="resetPageInfo(); getCookies();">
+                </div>
+              </span>
+            </th>
+            <th class="text_column" scope="col">
+              <span>
+                Status
+              </span>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -91,6 +104,10 @@
               </span>
             </td>
             <td style="cursor: pointer;" @click="copyItemToClipBoard(cookie.url)">{{ cookie.url }}</td>
+            <td style="cursor: pointer;" @click="copyItemToClipBoard(cookie.creation_utc)">{{ formatDate(cookie.creation_utc) }}</td>
+            <td :class="{ 'expired': isCookieExpired(cookie.expires_utc) }">
+              {{ isCookieExpired(cookie.expires_utc) ? 'Expired' : 'Active' }}
+            </td>
           </tr>
         </tbody>
       </table>
@@ -121,6 +138,7 @@ export default {
       cookie_value_search_value: '',
       windows_user_search_value: '',
       url_search_value: '',
+      creation_date_search_value: '',
       cookieSelected: 0,
       page_size: 100,
       page_number: 1,
@@ -135,6 +153,23 @@ export default {
         return data.replace(/./g, "*")
       }
       return data
+    },
+    formatDate(dateString) {
+      if (!dateString) return '';
+      const date = new Date(dateString);
+      return date.toLocaleString('de-DE', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    },
+    isCookieExpired(expiresUtc) {
+      if (!expiresUtc) return true;
+      const now = new Date();
+      const expires = new Date(expiresUtc);
+      return now > expires;
     },
     copyItemToClipBoard(data){
       copyToClipBoard(this, data);
@@ -201,3 +236,45 @@ export default {
   }
 };
 </script>
+
+<style lang="scss">
+.text_column {
+  min-width:10rem;
+  max-width:10rem;
+}
+
+.expired {
+  color: #dc3545;
+  font-weight: bold;
+}
+
+tr {
+  border-color: #ddd !important;
+}
+
+td {
+  cursor: pointer; 
+}
+
+.buttons {
+  height: 5rem;
+}
+
+.fullValue {
+  position: relative;
+  display: inline-block;
+}
+
+.fullValue div {
+  position: absolute;
+  z-index: 1;
+  background-color: var(--dark);
+  color: var(--light);
+  padding: 0.5rem;
+  border-radius: 0.25rem;
+  white-space: nowrap;
+  max-width: 20rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+</style>

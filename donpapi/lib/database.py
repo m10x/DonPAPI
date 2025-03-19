@@ -480,7 +480,7 @@ class Database:
         donpapi_logger.debug(f"get_cookie(id={id}) - results: {json_result}")
         return json_result
        
-    def get_cookies(self, page = 0, page_size = 500, computer_hostname = None, cookie_name = None, cookie_value = None, windows_user = None, url = None):
+    def get_cookies(self, page = 0, page_size = 500, computer_hostname = None, cookie_name = None, cookie_value = None, windows_user = None, url = None, creation_date = None):
         if page <0:
             page = 0
 
@@ -500,6 +500,9 @@ class Database:
         if url and url != "":
             url_like_term = func.lower(f"%{url}%")
             q = q.filter(func.lower(self.CookiesTable.c.url).like(url_like_term))
+        if creation_date and creation_date != "":
+            creation_date_like_term = func.lower(f"%{creation_date}%")
+            q = q.filter(func.lower(self.CookiesTable.c.creation_utc).like(creation_date_like_term))
         results = self.conn.execute(q).all()
 
         cookies = [row._asdict() for row in results]
