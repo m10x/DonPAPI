@@ -23,7 +23,7 @@
     <p class="description" style="font-style: italic">Note: Click on a value in a cell to copy it to clipboard. Ticked cookies will be copy as JavaScript code to your clipboard when you click <b>Copy</b> button, allowing you to inject them into your browser. <b>Search</b> button will show searchbar for every column.</p>
     <br><br>
     <div class="tableFixHead">
-      <table style="width: 90%;" class="table table-hover">
+      <table class="table table-hover">
         <thead>
           <tr>
             <th scope="col"><input id="main-checkbox" type="checkbox" @click="toggleCookiesSelection" :checked="allChecked"></th>
@@ -240,7 +240,7 @@ export default {
 
 <style lang="scss">
 .text_column {
-  min-width: 10rem;
+  min-width: 8rem;
   max-width: none;
   white-space: nowrap;
   overflow: hidden;
@@ -261,6 +261,7 @@ td {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  min-width: 8rem;
 }
 
 .buttons {
@@ -291,7 +292,14 @@ td {
 }
 
 .tableFixHead {
+  overflow-x: auto;
   overflow-y: auto;
   max-height: 70vh;
+  width: 100%;
+}
+
+.container {
+  width: 100%;
+  padding: 1rem;
 }
 </style>
