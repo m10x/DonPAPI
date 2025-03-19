@@ -37,7 +37,7 @@
             </th>
             <th class="text_column" scope="col">
               <span>
-                Windows User
+                Windows User2
                 <div>
                   <input type="text" placeholder="Search text" v-model="windows_user_search_value" @change="resetPageInfo(); getCookies();">
                 </div>
