@@ -79,6 +79,6 @@ class RecycleBin:
                                 
                                 collector_dir_local_filepath = os.path.join(self.context.global_output_dir, self.tag, new_path.replace("\\", "_"))
                                 if username:
-                                    absolute_local_filepath = absolute_local_filepath.replace(sid, username)
+                                    collector_dir_local_filepath = collector_dir_local_filepath.replace(sid, username)
                                 dump_file_to_loot_directories(collector_dir_local_filepath, file_content)
                         

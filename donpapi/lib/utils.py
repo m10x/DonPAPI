@@ -126,6 +126,42 @@ def is_guid(value: str):
         return False
     
 def dump_file_to_loot_directories(local_filepath: str, file_content: bytes=b"") -> None:
+    local_filepath = _shorten_long_path_components(local_filepath)
     os.makedirs(os.path.dirname(local_filepath), exist_ok = True)
     with open(local_filepath, "wb") as f:
         f.write(file_content)
+
+
+MAX_PATH_COMPONENT_BYTES = 200
+
+def _shorten_path_component(name: str, max_bytes: int = MAX_PATH_COMPONENT_BYTES) -> str:
+    # Linux (ext4) and Windows both limit a single path component to 255 bytes.
+    # Collectors flatten remote paths (e.g. new_path.replace("\\", "_")),
+    # which can easily exceed that limit (Errno 36). Truncate the stem and
+    # append a short hash to keep the name unique while preserving extension.
+    encoded = name.encode("utf-8")
+    if len(encoded) <= max_bytes or len(name) == 0:
+        return name
+    import hashlib
+    stem, ext = os.path.splitext(name)
+    digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:8]
+    suffix = f"_{digest}{ext}"
+    suffix_bytes = len(suffix.encode("utf-8"))
+    budget = max_bytes - suffix_bytes
+    if budget <= 0:
+        return digest + ext[:max_bytes - len(digest)] if len(ext) else digest
+    truncated = stem.encode("utf-8")[:budget].decode("utf-8", errors="ignore")
+    return f"{truncated}{suffix}"
+
+def _shorten_long_path_components(path: str) -> str:
+    # Preserve absolute/relative nature of the path while shortening
+    # each individual component that exceeds the filesystem limit.
+    is_absolute = os.path.isabs(path)
+    parts = path.split(os.sep)
+    shortened = [_shorten_path_component(p) if p not in ("", ".", "..") else p for p in parts]
+    result = os.sep.join(shortened)
+    if is_absolute and not result.startswith(os.sep):
+        result = os.sep + result
+    if result != path:
+        donpapi_logger.debug(f"Shortened overlong path component: {path} -> {result}")
+    return result
