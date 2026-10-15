@@ -14,7 +14,7 @@ from rich.console import Console
 donpapi_console = Console(soft_wrap=True, tab_size=4)
 
 class DonPAPIAdapter(logging.LoggerAdapter):
-    def __init__(self, extra=None):
+    def __init__(self, extra=None, merge_extra=False):
         self.donpapi_console = donpapi_console
         logging.basicConfig(
             format="%(message)s",
@@ -29,7 +29,19 @@ class DonPAPIAdapter(logging.LoggerAdapter):
             ],
         )
         self.logger = logging.getLogger("donpapi")
-        self.extra = extra
+        # NOTE: logging.LoggerAdapter gained the `merge_extra` attribute in
+        # Python 3.13 (used by LoggerAdapter.process() in 3.14+). Since this
+        # class overrides __init__ without calling super().__init__, the
+        # attribute was missing and any .error()/.debug()/... call crashed
+        # on Python 3.14 with:
+        #   AttributeError: 'DonPAPIAdapter' object has no attribute 'merge_extra'
+        # Initialise properly for both old and new Pythons.
+        try:
+            super().__init__(self.logger, extra, merge_extra=merge_extra)
+        except TypeError:
+            # Python < 3.13: LoggerAdapter.__init__() has no merge_extra arg
+            super().__init__(self.logger, extra)
+            self.merge_extra = merge_extra
         self.output_file = None
 
         logging.getLogger("impacket").disabled = True
@@ -114,7 +126,7 @@ class DonPAPIAdapter(logging.LoggerAdapter):
                             )
                         )
                 except Exception as e:
-                    self.logger.fail(f"Issue while trying to custom print handler: {e}")
+                    self.logger.error(f"Issue while trying to custom print handler: {e}")
 
     def add_file_log(self, log_file=DPP_LOG_FILE_PATH):
         file_formatter = TermEscapeCodeFormatter("%(asctime)s - %(levelname)s - %(message)s")
