@@ -1,13 +1,14 @@
 import base64
 import os
 import sys
+import threading
 from typing import Optional
 import warnings
 from sqlite3 import connect
 from donpapi.lib.logger import donpapi_logger
 from donpapi.lib.paths import DPP_DB_FILE_PATH
 
-from sqlalchemy import MetaData, create_engine, func, Table, select
+from sqlalchemy import MetaData, create_engine, event, func, Table, select
 from sqlalchemy.dialects.sqlite import Insert  # used for upsert
 from sqlalchemy.exc import (
     NoInspectionAvailable,
@@ -19,7 +20,27 @@ from sqlalchemy.orm import sessionmaker, scoped_session
 warnings.filterwarnings("ignore", category=SAWarning)
 
 def create_db_engine(db_path):
-    return create_engine(f"sqlite:///{db_path}", isolation_level="AUTOCOMMIT", future=True)
+    # check_same_thread=False is required because a single engine/connection
+    # pool is shared across the ThreadPoolExecutor (50 threads).
+    # Without it plus the lock, concurrent SELECTs on the same
+    # sqlite connection fail with:
+    #   sqlite3.InterfaceError: bad parameter or other API misuse
+    engine = create_engine(
+        f"sqlite:///{db_path}",
+        isolation_level="AUTOCOMMIT",
+        future=True,
+        connect_args={"check_same_thread": False, "timeout": 30},
+    )
+
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragma(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL;")
+        cursor.execute("PRAGMA busy_timeout=5000;")
+        cursor.execute("PRAGMA foreign_keys=1;")
+        cursor.close()
+
+    return engine
 
 class Database:
     def __init__(self, db_engine) -> None:
@@ -39,7 +60,26 @@ class Database:
 
         Session = scoped_session(session_factory)
         self.conn = Session()
+        # SQLAlchemy Session/Connection is not thread-safe.
+        # All DB access is serialized through _exec()/_fetch_*().
+        self._lock = threading.RLock()
         pass
+
+    def _exec(self, *args, **kwargs):
+        # Only for writes without result fetching. Reads must use
+        # _fetch_all/_fetch_first because Result.all()/first() still
+        # reads from the cursor (lazy) and therefore must also happen
+        # while holding the lock.
+        with self._lock:
+            return self.conn.execute(*args, **kwargs)
+
+    def _fetch_all(self, q):
+        with self._lock:
+            return self.conn.execute(q).all()
+
+    def _fetch_first(self, q):
+        with self._lock:
+            return self.conn.execute(q).first()
 
     @staticmethod
     def db_schema(db_conn):
@@ -153,7 +193,7 @@ class Database:
         """
         hosts = []
         q = select(self.ComputersTable).filter(self.ComputersTable.c.ip == ip)
-        results = self.conn.execute(q).all()
+        results = self._fetch_all(q)
         if not results:
             new_host = {
                 "ip": ip,
@@ -185,7 +225,7 @@ class Database:
         q = q.on_conflict_do_update(index_elements=self.ComputersTable.primary_key, set_=update_columns)
         donpapi_logger.debug(f"Adding/Updating computers: {len(hosts)}")
 
-        self.conn.execute(q, hosts)  # .scalar()
+        self._exec(q, hosts)  # .scalar()
     
     def get_computer(self, filter_term=None):
         """Return computers from the database."""
@@ -194,20 +234,20 @@ class Database:
         # if we're returning a single computer by ID
         if self.is_computer_valid(filter_term):
             q = q.filter(self.ComputersTable.c.id == filter_term)
-            results = self.conn.execute(q).first()
+            results = self._fetch_first(q)
             # all() returns a list, so we keep the return format the same so consumers don't have to guess
             return results
         elif filter_term and filter_term != "":
             filter = func.lower(f"%{filter_term}%")
             q = q.filter(self.ComputersTable.c.ip.like(filter) | func.lower(self.ComputersTable.c.hostname).like(filter))
-            results = self.conn.execute(q).first()
+            results = self._fetch_first(q)
         donpapi_logger.debug(f"get_computer(filter_term={filter_term}) - results: {results}")
         return results
     
     def is_computer_valid(self, computer_id):
         """Check if this computer ID is valid."""
         q = select(self.ComputersTable).filter(self.ComputersTable.c.id == computer_id)
-        results = self.conn.execute(q).all()
+        results = self._fetch_all(q)
         return len(results) > 0
     
     def get_samhashes(self, computer=None):
@@ -217,9 +257,9 @@ class Database:
         if computer is not None:
             computer_id= self.get_computer(computer).id
             q = q.filter(self.SamHashesTable.c.computerid == computer_id)
-            results = self.conn.execute(q).all()
+            results = self._fetch_all(q)
         else:
-            results = self.conn.execute(q).all()
+            results = self._fetch_all(q)
         donpapi_logger.debug(f"get_samhashes(computer={computer}) - results: {results}")
         return results
 
@@ -236,7 +276,7 @@ class Database:
             self.SamHashesTable.c.computerid == computer_id,
         )
 
-        results = self.conn.execute(q).all()
+        results = self._fetch_all(q)
         donpapi_logger.debug(results)
         if not results:
 
@@ -250,7 +290,7 @@ class Database:
 
             try:
                 q = Insert(self.SamHashesTable)
-                self.conn.execute(q, [sam_entry])
+                self._exec(q, [sam_entry])
                 donpapi_logger.debug(f"add_samhash(samstring={samstring}, computer={computer})")
             except Exception as e:
                 donpapi_logger.debug(f"Issue while inserting SAM hash into db: {e}")
@@ -262,13 +302,13 @@ class Database:
         :pvk is the domain backupkey
         """
         q = select(self.DpapiBackupkeysTable).filter(func.lower(self.DpapiBackupkeysTable.c.domain) == func.lower(domain))
-        results = self.conn.execute(q).all()
+        results = self._fetch_all(q)
         if not len(results):
             pvk_encoded = base64.b64encode(pvk)
             backup_key = {"domain": domain, "pvk": pvk_encoded}
             try:
                 q = Insert(self.DpapiBackupkeysTable)
-                self.conn.execute(q, [backup_key])
+                self._exec(q, [backup_key])
                 donpapi_logger.debug(f"add_domain_backupkey(domain={domain}, pvk={pvk_encoded})")
             except Exception as e:
                 donpapi_logger.debug(f"Issue while inserting DPAPI Backup Key: {e}")
@@ -281,7 +321,7 @@ class Database:
         q = select(self.DpapiBackupkeysTable)
         if domain is not None:
             q = q.filter(func.lower(self.DpapiBackupkeysTable.c.domain) == func.lower(domain))
-        results = self.conn.execute(q).all()
+        results = self._fetch_all(q)
 
         donpapi_logger.debug(f"get_domain_backupkey(domain={domain}) => {results}")
 
@@ -295,7 +335,7 @@ class Database:
         :secret_id is a primary id
         """
         q = select(self.SecretsTable).filter(func.lower(self.SecretsTable.c.id) == secret_id)
-        results = self.conn.execute(q).first()
+        results = self._fetch_first(q)
         valid = results is not None
         donpapi_logger.debug(f"is_secret_valid(secret_ID={secret_id}) => {valid}")
         return valid
@@ -325,7 +365,7 @@ class Database:
             func.lower(self.SecretsTable.c.program) == func.lower(program),
             self.SecretsTable.c.computerid == computer_id,
         )
-        results = self.conn.execute(q).all()
+        results = self._fetch_all(q)
 
         if not results:
             secret_entry = {
@@ -340,7 +380,7 @@ class Database:
 
             try:
                 q = Insert(self.SecretsTable) 
-                self.conn.execute(q, [secret_entry])
+                self._exec(q, [secret_entry])
                 donpapi_logger.debug(f"add_secret(computer={computer}, collector={collector}, windows_user={windows_user}, username={username}, password={password}, target={target}, program={program})")
             except Exception as e:
                 donpapi_logger.debug(f"Issue while inserting secret: {e}")
@@ -370,7 +410,7 @@ class Database:
             self.CookiesTable.c.computerid == computer_id,
         )
 
-        results = self.conn.execute(q).all()
+        results = self._fetch_all(q)
 
         if not results:
             cookie_entry = {
@@ -387,7 +427,7 @@ class Database:
 
             try:
                 q = Insert(self.CookiesTable) 
-                self.conn.execute(q, [cookie_entry])
+                self._exec(q, [cookie_entry])
                 donpapi_logger.debug(f"add_cookie(computer={computer}, browser={browser}, windows_user={windows_user}, url={url}, cookie_name={cookie_name}, cookie_value={cookie_value}, creation_utc={creation_utc}, expires_utc={expires_utc}, last_access_utc={last_access_utc})")
             except Exception as e:
                 donpapi_logger.debug(f"Issue while inserting cookie: {e}")
@@ -401,7 +441,7 @@ class Database:
                         q = Insert(self.CookiesTable) 
                         update_columns = {col.name: col for col in q.excluded if col.name == "last_access_utc"}
                         q = q.on_conflict_do_update(index_elements=self.CookiesTable.primary_key, set_=update_columns)
-                        self.conn.execute(q, [cookie_data])
+                        self._exec(q, [cookie_data])
                         donpapi_logger.debug(f"update_cookie(id={cookie_data['id']}, computer={computer}, browser={browser}, windows_user={windows_user}, url={url}, cookie_name={cookie_name}, cookie_value={cookie_value}, creation_utc={creation_utc}, expires_utc={expires_utc}, last_access_utc={last_access_utc})")
                     except Exception as e:
                         donpapi_logger.debug(f"Issue while updating cookie {cookie_data['id']}: {e}")
@@ -418,7 +458,7 @@ class Database:
                 func.lower(self.CertificatesTable.c.windows_user) == func.lower(certificate.winuser),
             )
 
-        results = self.conn.execute(q).all()
+        results = self._fetch_all(q)
 
         if not results:
             certificate_entry = {
@@ -432,7 +472,7 @@ class Database:
 
             try:
                 q = Insert(self.CertificatesTable) 
-                self.conn.execute(q, [certificate_entry])
+                self._exec(q, [certificate_entry])
                 donpapi_logger.debug(f"add_certificate(filepath={filepath}, certificate={certificate}, computer={computer})")
             except Exception as e:
                 donpapi_logger.debug(f"Issue while inserting certificate: {e}")
@@ -442,7 +482,7 @@ class Database:
     def get_sam_reuse(self):
         # get the dups
         q = select(self.SamHashesTable.c.nthash).group_by(self.SamHashesTable.c.nthash).having(func.count(self.SamHashesTable.c.id) > 1)
-        results = self.conn.execute(q).all()
+        results = self._fetch_all(q)
         nthashes_dup = [row for row, in results]
 
         q = select(self.SamHashesTable, self.ComputersTable).join(self.SamHashesTable).filter(
@@ -451,7 +491,7 @@ class Database:
                 self.ComputersTable.c.dc.is_(False), # and not on DC
             ).order_by(self.SamHashesTable.c.nthash)
         
-        results2 = self.conn.execute(q).all()
+        results2 = self._fetch_all(q)
         json_result = [row._asdict() for row in results2]
         donpapi_logger.debug(f"get_sam_reuse() - results: {json_result}")
         return json_result
@@ -459,7 +499,7 @@ class Database:
     def get_scheduled_tasks(self):
         q = select(self.SecretsTable, self.ComputersTable).join(self.SecretsTable)
         q = q.filter(func.lower(self.SecretsTable.c.target).like("%TaskScheduler%"))
-        results = self.conn.execute(q).all()
+        results = self._fetch_all(q)
         json_result = [row._asdict() for row in results]
         donpapi_logger.debug(f"get_scheduled_tasks() - results: {json_result}")
         return json_result
@@ -467,7 +507,7 @@ class Database:
     def get_lsa_secrets(self):
         q = select(self.SecretsTable, self.ComputersTable).join(self.SecretsTable)
         q = q.filter(self.SecretsTable.c.collector == "LSA")
-        results = self.conn.execute(q).all()
+        results = self._fetch_all(q)
         json_result = [row._asdict() for row in results]
         donpapi_logger.debug(f"get_lsa_secrets() - results: {json_result}")
         return json_result
@@ -475,7 +515,7 @@ class Database:
     def get_cookie(self, id):
         q = select(self.CookiesTable)
         q = q.filter(self.CookiesTable.c.id == id)
-        results = self.conn.execute(q).first()
+        results = self._fetch_first(q)
         json_result = results._asdict() if results is not None else None
         donpapi_logger.debug(f"get_cookie(id={id}) - results: {json_result}")
         return json_result
@@ -500,7 +540,7 @@ class Database:
         if url and url != "":
             url_like_term = func.lower(f"%{url}%")
             q = q.filter(func.lower(self.CookiesTable.c.url).like(url_like_term))
-        results = self.conn.execute(q).all()
+        results = self._fetch_all(q)
 
         cookies = [row._asdict() for row in results]
 
@@ -512,7 +552,7 @@ class Database:
     
     def get_distinct_value_for_column(self, column):
         q = select(func.distinct(column))
-        results = self.conn.execute(q).all()
+        results = self._fetch_all(q)
 
         return [row[0] for row in results]
 
@@ -520,7 +560,7 @@ class Database:
     def get_secret(self, id):
         q = select(self.SecretsTable)
         q = q.filter(self.SecretsTable.c.id == id)
-        results = self.conn.execute(q).first()
+        results = self._fetch_first(q)
         return results._asdict() if results is not None else None
     
     def get_secrets(self, page = 0, page_size = 500, computer_hostname = None, collector = None, program = None, windows_user = None, target = None, username = None, password = None):
@@ -549,7 +589,7 @@ class Database:
             password_like_term = func.lower(f"%{password}%")
             q = q.filter(func.lower(self.SecretsTable.c.password).like(password_like_term))
         q = q.order_by(self.SecretsTable.c.collector)
-        results = self.conn.execute(q).all()
+        results = self._fetch_all(q)
 
         secrets = [row._asdict() for row in results]
 
@@ -564,7 +604,7 @@ class Database:
     def get_certificate(self, id):
         q = select(self.CertificatesTable)
         q = q.filter(self.CertificatesTable.c.id == id)
-        results = self.conn.execute(q).first()
+        results = self._fetch_first(q)
         return results._asdict() if results is not None else None
 
     def get_certificates(self, page = 0, page_size = 500, computer_hostname = None, windows_user = None, username = None, client_auth:bool = None):
@@ -581,7 +621,7 @@ class Database:
         if client_auth in [True, False] and client_auth is not None:
             q = q.filter(self.CertificatesTable.c.client_auth == client_auth)
 
-        results = self.conn.execute(q).all()
+        results = self._fetch_all(q)
 
         certificates = [row._asdict() for row in results]
 
